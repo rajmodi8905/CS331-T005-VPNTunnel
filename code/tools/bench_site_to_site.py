@@ -117,10 +117,11 @@ def capture_bytes(sock):
 class Lab(capacity.Experiment):
     """One clean instance of the repository's routed N1 fixture."""
 
-    def __init__(self, output, mode, openvpn):
+    def __init__(self, output, mode, openvpn, iperf):
         super().__init__(SimpleNamespace(output=output, resume=False))
         self.mode_name = mode
         self.openvpn = openvpn
+        self.iperf = iperf
         self.processes = []
         self.namespace_dirs = []
 
@@ -418,14 +419,14 @@ verb 3
         folder.mkdir()
         self.qstats(folder / "qdisc-before.json")
         srv_args = ["ip", "netns", "exec", vpt.D.NS["hb"],
-                    "iperf3", "-s", "-1", "-B", vpt.HB]
+                    str(self.iperf), "-s", "-1", "-B", vpt.HB]
         with (folder / "server.log").open("w") as log:
             server = subprocess.Popen(srv_args, stdout=log, stderr=subprocess.STDOUT)
         cpu = None
         try:
             self.await_ready("iperf3 listener", lambda: ":5201" in
                              self.ns("hb", "ss", "-Hln", "sport", "=", ":5201").stdout)
-            args = ["ip", "netns", "exec", vpt.D.NS["ha"], "iperf3", "-c", vpt.HB,
+            args = ["ip", "netns", "exec", vpt.D.NS["ha"], str(self.iperf), "-c", vpt.HB,
                     "-B", vpt.HA, "-J", "--get-server-output", "-t", str(seconds)]
             if reverse:
                 args.append("-R")
@@ -473,8 +474,12 @@ verb 3
         recv = iperf["end"]["sum_received"]
         sender = iperf["end"]["sum_sent"]
         delivered = recv["bytes"]
+        mss = iperf["start"].get("tcp_mss_default") if not rate else None
+        if not rate and mss not in (INNER_MTU - 40, INNER_MTU - 52):
+            raise RuntimeError(f"Unexpected TCP MSS for common inner MTU: {mss}")
         return dict(label=label, receiver_mbps=recv["bits_per_second"]/1e6, bytes=delivered,
                     offered_mbps=sender["bits_per_second"]/1e6, rate_mbps=rate, payload_bytes=size,
+                    receiver_seconds=recv["seconds"], tcp_mss=mss,
                     jitter_ms=recv.get("jitter_ms"), loss_pct=recv.get("lost_percent"),
                     delivered_pps=(recv["packets"] - recv["lost_packets"])/recv["seconds"]
                     if rate else None, retransmits=sender.get("retransmits"),
@@ -511,6 +516,9 @@ verb 3
                     raise RuntimeError(f"{self.mode_name} does not support {INNER_MTU}-byte inner packets")
                 data["overhead"] = self.overhead()
             self.routes(INNER_MTU)
+            # Both TCP peers need the same effective MTU before SYN/SYN-ACK.
+            for host in ("ha", "hb"):
+                self.ns(host, "ip", "link", "set", f"veth_{host}", "mtu", INNER_MTU)
             if not self.ping(INNER_MTU - 28):
                 raise RuntimeError("Common inner MTU is not reachable")
             if not args.setup_only:
@@ -554,6 +562,7 @@ def module_scope(module):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--iperf3", default=Path(shutil.which("iperf3") or "iperf3"), type=Path)
     parser.add_argument("--openvpn", type=Path, default=Path("/usr/sbin/openvpn"))
     parser.add_argument("--modes", choices=MODES, nargs="+", default=MODES)
     parser.add_argument("--runs", type=int, default=5)
@@ -569,11 +578,12 @@ def main():
     if len(args.modes) != len(set(args.modes)):
         parser.error("Each mode may be selected once")
     args.openvpn = args.openvpn.resolve()
+    args.iperf3 = args.iperf3.resolve()
     if not vpt.VPTCTL or not Path(vpt.VPTCTL).is_file():
         parser.error("Set VPTCTL to the built controller executable")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=args.resume)
-    versions = {"iperf3": execute("iperf3", "--version"), "wg": execute("wg", "--version"),
+    versions = {"iperf3": execute(args.iperf3, "--version"), "wg": execute("wg", "--version"),
                 "openvpn": execute(args.openvpn, "--version"),
                 "strongswan": execute("dpkg-query", "-W", "-f=${Version}", "strongswan-swanctl")}
     environment = dict(versions=versions, uname=list(os.uname()),
@@ -601,7 +611,7 @@ def main():
                 if cell.exists():
                     cell.rename(cell.with_name(f"{mode}-incomplete-{time.time_ns()}"))
                 print(f"Run {index+1}/{count}: {mode}", flush=True)
-                Lab(cell, mode, args.openvpn).run(args, index == 0)
+                Lab(cell, mode, args.openvpn, args.iperf3).run(args, index == 0)
     dump(output / "completion.json", dict(status="complete", repeats=count,
                                           modes=list(args.modes), setup_only=args.setup_only))
 
