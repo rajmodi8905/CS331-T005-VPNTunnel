@@ -1,5 +1,7 @@
 # Routed site-to-site VPN benchmark
 
+[Benchmark results and raw evidence](site-to-site-results.md)
+
 The same two Linux gateways route traffic between two IPv4 LANs in every mode. The N1 fixture provides the LAN and underlay links. Host A and Host B run the probes and traffic generators. The plain IPv4 baseline uses ordinary routes through both gateways. Each VPN provides encrypted forwarding between the same non-overlapping subnets. All modes allow TCP, UDP, and ICMP between those subnets. VPTunnel retains its built-in ACL and flow tracking in addition to the common gateway forwarding policy.
 
 ~~~text
@@ -53,11 +55,11 @@ Use a CPU list appropriate for the host. The measured run used the six performan
 
 ## Measurements
 
-- **TCP goodput.** Unshaped underlay, receiver goodput and sender retransmissions for one and four streams in each direction. Each result uses four measured seconds after two seconds of warm-up.
-- **UDP delivery.** A → B at 40, 75, and 90 Mbit/s of offered UDP payload with 64, 512, and 1200 bytes per datagram. Each window is three seconds. A 100 Mbit/s token bucket on each underlay bridge egress counts encapsulation as well as inner traffic and includes Ethernet framing overhead. At a fixed offered payload rate, smaller datagrams consume more link capacity for headers and framing.
+- **TCP goodput.** Unshaped underlay, receiver goodput and sender retransmissions for one and four streams in each direction. Each transfer targets four measured seconds after two seconds of warm-up. Actual receiver durations can vary with scheduling and are retained in the CSV.
+- **UDP delivery.** A → B at 40, 75, and 90 Mbit/s of offered UDP payload with 64, 512, and 1200 bytes per datagram. Each send window targets three seconds. The summary divides delivered bytes by the sender's duration and calculates loss from total sent and delivered datagrams. This counts packets missing after the last received sequence. The raw receiver metrics remain available in iperf3 JSON and in the CSV. A 100 Mbit/s token bucket on each underlay bridge egress counts encapsulation as well as inner traffic and includes Ethernet framing overhead. At a fixed offered payload rate, smaller datagrams consume more link capacity for headers and framing.
 - **Latency.** ICMP echo at 20 samples/s before shaping, and while the 75 Mbit/s, 1200-byte UDP case is active after shaping. Each point reports p50 and p95 RTT. Loaded versus idle RTT includes queueing and the change in shaping state. Compare loaded measurements across modes to assess delay at matched demand.
 - **CPU.** Sample aggregate and per-core Linux counters at 0.5 seconds. Report busy core-seconds per GiB of receiver payload, plus the busiest core's utilization. Busy time excludes idle and iowait and includes softirq, traffic generation, and other host activity. CPU measurements from five short runs describe this host and traffic profile.
-- **Overhead and MTU.** Capture isolated LAN and underlay probes with a 1500-byte underlay. Compare IP packet lengths and check the highest IPv4 DF probe with a reply and one unfragmented underlay packet. The data-plane tests set the gateway routes and both traffic endpoint interfaces to the shared 1428-byte effective inner MTU. The runner verifies each TCP test's negotiated MSS. Boundary probes run in the first repetition. The 92- and 93-byte inner packets expose alignment effects without relying on theoretical header sizes.
+- **Overhead and MTU.** Capture isolated LAN and underlay probes with a 1500-byte underlay. Compare IP packet lengths and check the highest IPv4 DF probe with a reply and one unfragmented underlay packet. The data-plane tests set the gateway routes and both traffic endpoint interfaces to the shared 1428-byte effective inner MTU. The runner verifies each TCP test's negotiated MSS. Boundary probes run in the first repetition. Packet-capture timestamps record collection time. The PCAPs are used for packet descriptions and lengths. The 92- and 93-byte inner packets expose alignment effects without relying on theoretical header sizes.
 
 TSO, GSO, and GRO are disabled on fixture veth devices for all modes. Repetitions rotate the mode order. The virtual links and shared host make the data useful for relative comparisons on this testbed. A physical gateway installation can have different bandwidth and CPU behavior. [iperf3 options and counters](https://software.es.net/iperf/invoking.html)
 

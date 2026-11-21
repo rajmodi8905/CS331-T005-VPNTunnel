@@ -46,6 +46,21 @@ def collect(output):
             for measurement in cell["measurements"]:
                 measurement = measurement.copy()
                 loaded = measurement.pop("loaded_rtt")
+                if measurement["rate_mbps"]:
+                    label = measurement["label"]
+                    end = read(output / f"run-{repetition:02d}" / mode / label / "iperf.json")["end"]
+                    sender = end["sum_sent"]
+                    received = measurement["bytes"] // measurement["payload_bytes"]
+                    sent = sender["packets"]
+                    if not 0 <= received <= sent or sent == 0:
+                        raise ValueError(f"Unexpected UDP datagram counts: {mode} {label} run {repetition}")
+                    measurement.update(
+                        udp_sent_packets=sent,
+                        udp_received_packets=received,
+                        udp_sender_window_seconds=sender["seconds"],
+                        udp_total_loss_pct=100 * (sent - received) / sent,
+                        udp_delivered_mbps_per_send_window=measurement["bytes"] * 8 / sender["seconds"] / 1e6,
+                    )
                 rtt = {f"loaded_{key}": value for key, value in loaded.items()} if loaded else {}
                 raw.append(dict(run=repetition, mode=mode, **measurement, **rtt))
     return environment, data, raw
@@ -75,7 +90,8 @@ def report(env, data, raw):
         "",
         "## Unshaped TCP receiver goodput",
         "",
-        f"Values are Mbit/s. Each window measures {env['tcp_seconds']} seconds after a two-second warm-up.",
+        f"Values are Mbit/s. Each transfer targets {env['tcp_seconds']} measured seconds after a "
+        "two-second warm-up. The CSV contains the actual receiver durations.",
         "",
         *header(["Setup", "1 stream A → B", "1 stream B → A", "4 streams A → B", "4 streams B → A"]),
     ]
@@ -93,15 +109,18 @@ def report(env, data, raw):
 
     output += ["", "## Shaped UDP", "",
                f"A → B on a {env['shaped_mbps']} Mbit/s underlay. Cells give median delivered Mbit/s "
-               "and median receiver loss. The CSV includes jitter, delivered packet rate, and individual runs.",
+               "and median end-to-end datagram loss. Throughput is received bytes divided by the sender's measured "
+               "window. Loss uses the total sent and delivered datagrams, including gaps after the final "
+               "received datagram. The CSV retains iperf3's receiver goodput and loss, jitter, and packet rate.",
                "", *header(["UDP payload", "Offered Mbit/s"] + [NAMES[mode] for mode in modes])]
     for size in UDP_SIZES:
         for rate in UDP_RATES:
             values = []
             for mode in modes:
                 runs = transfers[(mode, f"udp-{size}-{rate}")]
-                values.append(f"{median(r['receiver_mbps'] for r in runs):.2f} / "
-                              f"{median(r['loss_pct'] for r in runs):.2f}%")
+                median_delivery = median(r["udp_delivered_mbps_per_send_window"] for r in runs)
+                median_loss = median(r["udp_total_loss_pct"] for r in runs)
+                values.append(f"{median_delivery:.2f} / {median_loss:.2f}%")
             output.append(row([f"{size} B", rate, *values]))
 
     output += ["", "### RTT and CPU under matched demand", "",
@@ -124,7 +143,7 @@ def report(env, data, raw):
 
     output += ["", "## IPv4 encapsulation", "",
                "Each number is the outer IP packet length minus the original IP packet length. "
-               "The underlay limit is the largest captured unfragmented IPv4 echo request that got a reply.",
+               "The MTU column gives the largest inner IPv4 echo request carried without fragmentation that got a reply.",
                "", *header(["Setup", "Largest inner IP packet", "92 B inner", "93 B inner",
                             "540 B inner", "1228 B inner"])]
     for mode, cells in data.items():
