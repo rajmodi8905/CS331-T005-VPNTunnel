@@ -1,5 +1,7 @@
 # Benchmarking
 
+For the WireGuard, strongSwan, and OpenVPN DCO comparison, see [the site-to-site benchmark runbook](site-to-site-benchmark.md).
+
 Four benchmarks, each writing a Markdown `summary.md` (the namespace ones also JSON) under
 `results/<timestamp>-*/`. The two namespace benchmarks run on **one machine** inside
 network namespaces (no Pis, no Wi-Fi, no cable) and are fully reproducible on a Linux
